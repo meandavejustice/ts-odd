@@ -474,7 +474,6 @@ export class FileSystem implements API {
         // Skip the pretty tree, we don't need to attach the symlink to that.
         if (BareTree.instanceOf(root)) return
         if (!PublicTree.instanceOf(root)) {
-          // TODO
           throw new Error(`Symlinks not supported in WASM-WNFS yet.`)
         } else {
           await this.runOnChildTree(root, relPath, async tree => {
@@ -554,6 +553,7 @@ export class FileSystem implements API {
 
   // HISTORY STEPPING
   // ----------------
+
   /**
    * Ensures the current version of your file system is "committed"
    * and stepped forward, so the current version will always be

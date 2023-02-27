@@ -1,11 +1,10 @@
 import { CID } from "multiformats"
-import { PublicDirectory, PublicFile, PublicNode, PrivateDirectory, PrivateFile, PrivateNode, Namefilter, PrivateForest } from "wnfs"
+import { PublicDirectory, PublicFile, PublicNode, PrivateDirectory, PrivateFile, PrivateNode, Namefilter, PrivateForest, PrivateRef } from "wnfs"
 
 import * as Crypto from "../../components/crypto/implementation.js"
 import * as Depot from "../../components/depot/implementation.js"
 import * as Manners from "../../components/manners/implementation.js"
 
-import { WASM_WNFS_VERSION } from "../../common/version.js"
 import { Segments as Path } from "../../path/index.js"
 
 import { UnixTree, Puttable, File, Links, PuttableUnixTree } from "../types.js"
@@ -14,30 +13,15 @@ import { BaseFile } from "../base/file.js"
 import { Metadata } from "../metadata.js"
 import { loadWasm } from "./wasm.js"
 
-// This is some global mutable state to work around global mutable state
-// issues with wasm-bindgen. It's important we *never* accidentally initialize the
-// "wnfs" Wasm module twice.
-let initialized = false
-
-async function loadWasm({ manners }: Dependencies) {
-  // MUST be prevented from initializing twice:
-  // https://github.com/fission-codes/webnative/issues/429
-  // https://github.com/rustwasm/wasm-bindgen/issues/3307
-  if (initialized) return
-  initialized = true
-
-  manners.log(`⏬ Loading WNFS WASM`)
-  const before = performance.now()
-  // init accepts Promises as arguments
-  await init(manners.wnfsWasmLookup(WASM_WNFS_VERSION))
-  const time = performance.now() - before
-  manners.log(`🧪 Loaded WNFS WASM (${time.toFixed(0)}ms)`)
-}
 
 type Dependencies = {
   crypto: Crypto.Implementation
   depot: Depot.Implementation
   manners: Manners.Implementation
+}
+
+type Rng = {
+  randomBytes(count: number): Uint8Array
 }
 
 interface DirEntry {
@@ -63,7 +47,7 @@ interface OpResult<Directory, A> {
 // RNG
 
 
-export function makeRngInterface(crypto: Crypto.Implementation) {
+export function makeRngInterface(crypto: Crypto.Implementation): Rng {
   return {
     /** Returns random bytes of specified length */
     randomBytes(count: number): Uint8Array {
@@ -147,11 +131,9 @@ abstract class Root<
   // POSIX INTERFACE
 
   async add(path: Path, content: Uint8Array): Promise<this> {
-    const { cid } = await this.dependencies.depot.putChunked(content)
-
     await this.atomically(async root => {
       const { rootDir } = await this.withError(
-        this.rootWrite(path, cid.bytes),
+        this.rootWrite(path, content),
         `write(${path.join("/")})`
       )
 
@@ -320,7 +302,11 @@ export class PublicRoot extends Root<PublicDirectory, PublicNode> {
   async rootMv(from: Path, to: Path) { return (await this.root).basicMv(from, to, new Date(), this.store) }
   async rootRead(path: Path) { return (await this.root).read(path, this.store) }
   async rootRm(path: Path) { return (await this.root).rm(path, this.store) }
-  async rootWrite(path: Path, cid: Uint8Array) { return (await this.root).write(path, cid, new Date(), this.store) }
+
+  async rootWrite(path: Path, content: Uint8Array) {
+    const { cid } = await this.dependencies.depot.putChunked(content)
+    return (await this.root).write(path, cid.bytes, new Date(), this.store)
+  }
 
 }
 
@@ -328,14 +314,15 @@ export class PublicRoot extends Root<PublicDirectory, PublicNode> {
 export class PrivateRoot extends Root<PrivateDirectory, PrivateNode> {
 
   forest: PrivateForest
-
+  rng: Rng
 
   constructor(
     dependencies: Dependencies,
     root: PrivateDirectory,
     store: BlockStore,
     readOnly: boolean,
-    forest: PrivateForest
+    forest: PrivateForest,
+    rng: Rng
   ) {
     super(
       dependencies,
@@ -345,6 +332,7 @@ export class PrivateRoot extends Root<PrivateDirectory, PrivateNode> {
     )
 
     this.forest = forest
+    this.rng = rng
   }
 
 
@@ -356,40 +344,41 @@ export class PrivateRoot extends Root<PrivateDirectory, PrivateNode> {
     const forest = new PrivateForest()
     const root = new PrivateDirectory(new Namefilter(), new Date(), rng)
 
-    return new PrivateRoot(dependencies, root, store, false, forest)
+    return new PrivateRoot(dependencies, root, store, false, forest, rng)
   }
 
   static async fromCID(dependencies: Dependencies, forestCID: CID, privateRef: PrivateRef): Promise<PrivateRoot> {
     await loadWasm(dependencies)
 
     const store = new DepotBlockStore(dependencies.depot)
-    const forest =
-    const root = await PrivateForest.get(namefilterHash, revisionKey, store)
+    const rng = makeRngInterface(dependencies.crypto)
+    const forest = await PrivateForest.load(forestCID.bytes, store)
+    const root = await PrivateNode.load(privateRef, forest, store)
 
-    return new PrivateRoot(dependencies, root, store, false)
+    return new PrivateRoot(dependencies, root, store, false, forest, rng)
   }
 
 
   // IMPLEMENTATION
 
+  static searchLatest() { return true }
+
   lookupNode(directory: PrivateDirectory, name: string): Promise<PrivateNode> {
-    return directory.lookupNode(name, this.store)
+    return directory.lookupNode(name, PrivateRoot.searchLatest(), this.forest, this.store)
   }
 
   async put(): Promise<CID> {
-    const cidBytes = await this.root.then(r => r.store(this.store))
+    const cidBytes = await this.root.then(r => r.store(this.forest, this.store, this.rng))
     return CID.decode(cidBytes)
   }
 
-  static searchLatest() { return true }
-
-  async rootGetNode(path: Path) { return (await this.root).getNode(path, this.searchLatest(), this.forest, this.store) }
-  async rootLs(path: Path) { return (await this.root).ls(path, this.store) }
-  async rootMkdir(path: Path) { return (await this.root).mkdir(path, new Date(), this.store) }
-  async rootMv(from: Path, to: Path) { return (await this.root).basicMv(from, to, new Date(), this.store) }
-  async rootRead(path: Path) { return (await this.root).read(path, this.store) }
-  async rootRm(path: Path) { return (await this.root).rm(path, this.store) }
-  async rootWrite(path: Path, cid: Uint8Array) { return (await this.root).write(path, cid, new Date(), this.store) }
+  async rootGetNode(path: Path) { return (await this.root).getNode(path, PrivateRoot.searchLatest(), this.forest, this.store) }
+  async rootLs(path: Path) { return (await this.root).ls(path, PrivateRoot.searchLatest(), this.forest, this.store) }
+  async rootMkdir(path: Path) { return (await this.root).mkdir(path, PrivateRoot.searchLatest(), new Date(), this.forest, this.store, this.rng) }
+  async rootMv(from: Path, to: Path) { return (await this.root).basicMv(from, to, PrivateRoot.searchLatest(), new Date(), this.forest, this.store, this.rng) }
+  async rootRead(path: Path) { return (await this.root).read(path, PrivateRoot.searchLatest(), this.forest, this.store) }
+  async rootRm(path: Path) { return (await this.root).rm(path, PrivateRoot.searchLatest(), this.forest, this.store) }
+  async rootWrite(path: Path, content: Uint8Array) { return (await this.root).write(path, PrivateRoot.searchLatest(), content, new Date(), this.forest, this.store, this.rng) }
 
 }
 
@@ -495,7 +484,7 @@ export class WasmFile extends BaseFile {
   private root: Root<PublicDirectory | PrivateDirectory, PublicNode | PrivateNode>
   private cachedFile: PublicFile | PrivateFile
 
-  constructor(content: Uint8Array, directory: string[], filename: string, root: PublicRoot | PrivateRoot, cachedFile: PublicFile | PrivateFile) {
+  constructor(content: Uint8Array, directory: string[], filename: string, root: Root<PublicDirectory | PrivateDirectory, PublicNode | PrivateNode>, cachedFile: PublicFile | PrivateFile) {
     super(content)
     this.directory = directory
     this.filename = filename
@@ -530,7 +519,8 @@ export class WasmFile extends BaseFile {
 
 
 
-//
+// NODE HEADER
+
 
 function nodeHeader(node: PublicFile | PublicDirectory | PrivateFile | PrivateDirectory): { metadata: Metadata; previous?: CID } {
   // There's some differences between the two.

@@ -29,7 +29,7 @@ import MMPT from "../protocol/private/mmpt.js"
 import PublicTree from "../v1/PublicTree.js"
 import PrivateTree from "../v1/PrivateTree.js"
 import PrivateFile from "../v1/PrivateFile.js"
-import { PublicRootWasm } from "../v3/PublicRootWasm.js"
+import { PublicRoot as PublicRootV3 } from "../v3/classes.js"
 
 
 
@@ -109,7 +109,7 @@ export default class RootTree implements Puttable {
     }
 
     const publicTree = wnfsWasm
-      ? await PublicRootWasm.empty(dependencies)
+      ? await PublicRootV3.empty(dependencies)
       : await PublicTree.empty(dependencies.depot, dependencies.reference)
 
     const prettyTree = await BareTree.empty(dependencies.depot)
@@ -178,7 +178,7 @@ export default class RootTree implements Puttable {
     const publicTree = publicCID === null
       ? await PublicTree.empty(dependencies.depot, dependencies.reference)
       : wnfsWasm
-        ? await PublicRootWasm.fromCID({ depot, manners }, decodeCID(publicCID))
+        ? await PublicRootV3.fromCID({ crypto, depot, manners }, decodeCID(publicCID))
         : await PublicTree.fromCID(dependencies.depot, dependencies.reference, decodeCID(publicCID))
 
 

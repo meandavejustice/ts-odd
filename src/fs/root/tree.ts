@@ -29,7 +29,7 @@ import MMPT from "../protocol/private/mmpt.js"
 import PublicTree from "../v1/PublicTree.js"
 import PrivateTree from "../v1/PrivateTree.js"
 import PrivateFile from "../v1/PrivateFile.js"
-import { PublicRoot as PublicRootV3 } from "../v3/classes.js"
+import { PublicRoot as PublicRootV3, PrivateRoot as PrivateRootV3 } from "../v3/classes.js"
 
 
 
@@ -56,7 +56,7 @@ export default class RootTree implements Puttable {
   dependencies: Dependencies
 
   links: SimpleLinks
-  mmpt: MMPT
+  privateForest: Puttable
   privateLog: Array<SimpleLink>
 
   sharedCounter: number
@@ -66,11 +66,11 @@ export default class RootTree implements Puttable {
   prettyTree: BareTree
   privateNodes: Record<string, PrivateNode>
 
-  constructor({ dependencies, links, mmpt, privateLog, sharedCounter, sharedLinks, publicTree, prettyTree, privateNodes }: {
+  constructor({ dependencies, links, privateForest, privateLog, sharedCounter, sharedLinks, publicTree, prettyTree, privateNodes }: {
     dependencies: Dependencies
 
     links: SimpleLinks
-    mmpt: MMPT
+    privateForest: Puttable
     privateLog: Array<SimpleLink>
 
     sharedCounter: number
@@ -83,7 +83,7 @@ export default class RootTree implements Puttable {
     this.dependencies = dependencies
 
     this.links = links
-    this.mmpt = mmpt
+    this.privateForest = privateForest
     this.privateLog = privateLog
 
     this.sharedCounter = sharedCounter
@@ -113,11 +113,11 @@ export default class RootTree implements Puttable {
       : await PublicTree.empty(dependencies.depot, dependencies.reference)
 
     const prettyTree = await BareTree.empty(dependencies.depot)
-    const mmpt = MMPT.create(dependencies.depot)
+    const privateForest = MMPT.create(dependencies.depot)
 
     // Private tree
     const rootPath = Path.toPosix(Path.directory(Path.RootBranch.Private))
-    const rootTree = await PrivateTree.create(dependencies.crypto, dependencies.depot, dependencies.manners, dependencies.reference, mmpt, rootKey, null)
+    const rootTree = await PrivateTree.create(dependencies.crypto, dependencies.depot, dependencies.manners, dependencies.reference, privateForest, rootKey, null)
     await rootTree.put()
 
     // Construct tree
@@ -125,7 +125,7 @@ export default class RootTree implements Puttable {
       dependencies,
 
       links: {},
-      mmpt,
+      privateForest,
       privateLog: [],
 
       sharedCounter: 1,
@@ -147,7 +147,7 @@ export default class RootTree implements Puttable {
     await Promise.all([
       tree.updatePuttable(RootBranch.Public, publicTree),
       tree.updatePuttable(RootBranch.Pretty, prettyTree),
-      tree.updatePuttable(RootBranch.Private, mmpt)
+      tree.updatePuttable(RootBranch.Private, privateForest)
     ])
 
     // Fin
@@ -189,13 +189,26 @@ export default class RootTree implements Puttable {
     // Load private bits
     const privateCID = links[ RootBranch.Private ]?.cid || null
 
-    let mmpt, privateNodes
+    let privateForest, privateNodes
     if (privateCID === null) {
-      mmpt = MMPT.create(dependencies.depot)
+      if (wnfsWasm) {
+        privateForest = await PrivateRootV3.empty(dependencies)
+      } else {
+        privateForest = MMPT.create(dependencies.depot)
+      }
+
       privateNodes = {}
+
     } else {
-      mmpt = await MMPT.fromCID(dependencies.depot, decodeCID(privateCID))
-      privateNodes = await loadPrivateNodes(dependencies, accountDID, keys, mmpt)
+      if (wnfsWasm) {
+        const privateRef = {}
+        privateForest = await PrivateRootV3.fromCID(dependencies, decodeCID(privateCID), privateRef)
+      } else {
+        privateForest = await MMPT.fromCID(dependencies.depot, decodeCID(privateCID))
+      }
+
+      privateNodes = await loadPrivateNodes(dependencies, accountDID, keys, privateForest)
+
     }
 
     const privateLogCid = links[ RootBranch.PrivateLog ]?.cid
@@ -225,7 +238,7 @@ export default class RootTree implements Puttable {
       dependencies,
 
       links,
-      mmpt,
+      privateForest,
       privateLog,
 
       sharedCounter,

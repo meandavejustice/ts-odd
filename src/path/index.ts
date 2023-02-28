@@ -7,6 +7,7 @@ export enum RootBranch {
   Pretty = "p",
   Private = "private",
   PrivateLog = "privateLog",
+  PrivateRef = "privateRef",
   Shared = "shared",
   SharedCounter = "sharedCounter",
   Version = "version"

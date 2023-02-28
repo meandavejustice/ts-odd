@@ -701,7 +701,7 @@ export class FileSystem implements API {
     await this.root.bumpSharedCounter()
 
     // Publish
-    await this.root.updatePuttable(RootBranch.Private, this.root.mmpt)
+    await this.root.updatePuttable(RootBranch.Private, this.root.privateForest)
     await this.publish()
 
     // Fin
@@ -759,9 +759,9 @@ export class FileSystem implements API {
 
       await handlers.private(node, parts.slice(Path.unwrap(nodePath).length))
       await node.put()
-      await this.root.updatePuttable(RootBranch.Private, this.root.mmpt)
+      await this.root.updatePuttable(RootBranch.Private, this.root.privateForest)
 
-      const cid = await this.root.mmpt.put()
+      const cid = await this.root.privateForest.put()
       await this.root.addPrivateLogEntry(this.dependencies.depot, cid)
 
     } else if (head === RootBranch.Pretty) {
